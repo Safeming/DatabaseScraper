@@ -1,0 +1,40 @@
+url : https://scrapeme.live/shop/
+q1 : scrap name, price and image_link for each item
+q1 : scrap name, price and product_link
+------------------------------
+url : https://books.toscrape.com/
+p1 : scrap name, price, book_link for each book
+------------------------------
+url : https://quotes.toscrape.com/
+p1 : scrap quote content, quote author and quote tag of each quote
+p2 : scrap quote and author
+------------------------------'
+url : https://www.scrapethissite.com/pages/forms/
+p1 : scrap all columns of this page
+p2 : scrap Team Name, Year, Wins, Losses and Win %
+------------------------------
+url : https://moviesjoytv.to/top-imdb
+p1 : scrap all information about films
+p2 : scrap title, year, runtime and type of movies
+------------------------------
+url : https://www.scrapethissite.com/pages/simple/
+p1 : scrap all information about countries
+------------------------------
+url : https://news.ycombinator.com/
+p1 : scrap title, points, comments_number, post_time and link for each article
+------------------------------
+url : https://www.learnprompt.org/chat-gpt-prompts-for-youtubers/
+p1 : scrap prompt, category
+------------------------------
+url : https://pypi.org/search/?q=markdown&o=
+p1 : Provide all the libraries and their installation commands, date of publishing
+------------------------------
+url : https://pypi.org/search/?q=genai
+p1 : Provide all the libraries and their installation commands
+------------------------------
+url: https://www.amazon.com/s?k=data+engineering+books
+p1 : scrap book name and price for each book
+------------------------------
+url : https://sandbox.oxylabs.io/products
+p1 : scrap name, price, is it in stock, description, categories (separated by '|') and image_link for each item
+p2 : scrap name, price, is it in stock for each item

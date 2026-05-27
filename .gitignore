@@ -1,0 +1,9 @@
+__pycache__/
+.ipynb_checkpoints/
+cache/
+notebooks/
+chrome-linux64/
+venv/
+.env
+*.db
+exports/
