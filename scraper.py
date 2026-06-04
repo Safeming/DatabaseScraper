@@ -12,11 +12,12 @@ import html2text
 import subprocess
 import urllib.request
 from bs4 import BeautifulSoup
-from crawl4ai import AsyncWebCrawler
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.support import expected_conditions as EC
@@ -131,24 +132,52 @@ def get_chrome_version_linux():
         return None
 
 
-def setup_selenium():
-    options = Options()
+def _first_existing_path(paths):
+    for path in paths:
+        if path and os.path.exists(path):
+            return path
+    return None
 
-    # Set random user-agent
+
+def _windows_browser_binary():
+    chrome_path = _first_existing_path([
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+    ])
+    if chrome_path:
+        return "chrome", chrome_path
+
+    edge_path = _first_existing_path([
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+    ])
+    if edge_path:
+        return "edge", edge_path
+
+    return "chrome", None
+
+
+def _add_common_browser_options(options, user_data_dir):
     user_agent = random.choice(USER_AGENTS)
     options.add_argument(f"user-agent={user_agent}")
 
-    # Add headless and other options
     for option in HEADLESS_OPTIONS:
         options.add_argument(option)
 
+    options.add_argument(f"--user-data-dir={user_data_dir}")
+    return options
+
+
+def setup_selenium():
     # Create a unique temporary user data directory
     user_data_dir = tempfile.mkdtemp()
     logger.info(f"Using unique user data dir: {user_data_dir}")
-    options.add_argument(f"--user-data-dir={user_data_dir}")
 
     # Chrome binary path for Linux
     if platform.system() == "Linux":
+        options = _add_common_browser_options(Options(), user_data_dir)
         download_chromium()
         options.binary_location = f"./{CHROME_DIR}/chrome"
         chrome_version = get_chrome_version_linux()
@@ -160,14 +189,25 @@ def setup_selenium():
 
     # Chrome path on Windows (use default or custom install path if needed)
     elif platform.system() == "Windows":
-        chrome_default_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-        if os.path.exists(chrome_default_path):
-            options.binary_location = chrome_default_path
+        browser_name, browser_path = _windows_browser_binary()
+        if browser_name == "edge":
+            options = _add_common_browser_options(EdgeOptions(), user_data_dir)
+            options.binary_location = browser_path
+            logger.info(f"Using Microsoft Edge for Selenium: {browser_path}")
+            return webdriver.Edge(options=options)
+
+        options = _add_common_browser_options(Options(), user_data_dir)
+        if browser_path:
+            options.binary_location = browser_path
         else:
             logger.warning("Chrome binary not found, using system default.")
         # Get compatible driver version
         driver_path = ChromeDriverManager().install()
-        
+
+    else:
+        options = _add_common_browser_options(Options(), user_data_dir)
+        driver_path = ChromeDriverManager().install()
+
     service = Service(driver_path)
     driver = webdriver.Chrome(service=service, options=options)
     return driver
@@ -217,11 +257,16 @@ def fetch_html_selenium(url, timeout=60):
 
 
 def clean_html(html_content):
+    if not html_content:
+        raise RuntimeError("Selenium failed to fetch page HTML.")
+
     soup = BeautifulSoup(html_content, "html.parser")
 
     # Extract page title and page body
     title = soup.title.string if soup.title else "No Title"
     body = soup.body
+    if body is None:
+        raise RuntimeError("Fetched page does not contain a body element.")
 
     # Remove irrelevant tags
     for tag in body(["script", "style", "iframe", "nav", "footer", "header"]):
@@ -241,11 +286,15 @@ def to_markdown(title, body_html) :
     return clean_markdown(markdown_content)
 
 def selenium_scraper(url):
-    html_content = fetch_html_selenium(url)
-    title, cleaned_body = clean_html(html_content)
-    # print(cleaned_body)
-    cleaned_md = to_markdown(title, cleaned_body)
-    return cleaned_md
+    try:
+        html_content = fetch_html_selenium(url)
+        title, cleaned_body = clean_html(html_content)
+        # print(cleaned_body)
+        cleaned_md = to_markdown(title, cleaned_body)
+        return cleaned_md
+    except Exception as e:
+        logger.error(f"Error using Selenium on {url}: {e}")
+        return f"Error: Selenium failed to fetch page. {e}"
 
 # ------
 
@@ -254,8 +303,13 @@ async def get_markdown_async(url, timeout=120, raw=False):
     Scrape the content of the webpage using Crawl4AI.
     """
     try:
-        async with AsyncWebCrawler() as crawler:
-            result = await asyncio.wait_for(crawler.arun(url=url), timeout=timeout)
+        browser_config = BrowserConfig(verbose=False)
+        run_config = CrawlerRunConfig(verbose=False)
+        async with AsyncWebCrawler(config=browser_config) as crawler:
+            result = await asyncio.wait_for(
+                crawler.arun(url=url, config=run_config),
+                timeout=timeout,
+            )
 
         if result.success:
             return result.markdown if raw else clean_markdown(result.markdown)
