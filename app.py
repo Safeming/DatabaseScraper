@@ -13,7 +13,8 @@ from typing import List
 from datetime import datetime
 from scraper import get_url_md
 from urllib.parse import urlparse
-from generate_response import generate_response, generate_response2
+from generate_response import generate_response, generate_response2, classify_website, adapt_fields_for_page
+from categories import CATEGORY_TEMPLATES, get_category_info
 from database import init_db
 
 logging.basicConfig(level=logging.INFO)
@@ -211,11 +212,27 @@ with st.sidebar:
             st.warning("No Ollama models found. Run `ollama pull <model_name>` first.")
             selected_model = None
 
-    else : 
+    else :
         llm_name = st.selectbox("Enter LLM Name:", ['DeepSeek-R1-Distill-Llama-70B', 'DeepSeek-V3-0324', 'DeepSeek-R1', 'Qwen3-32B', 'QwQ-32B'], index=0)
         # api_key = st.text_input("Enter Sambanova API Key", type="password", value=os.getenv("API_KEY"))
 
-    query = st.text_area("What do you want to Extract (fields):", height=80)
+    # 提取模式：智能识别 vs 手动指定
+    extract_mode = st.radio(
+        "提取模式",
+        ["🤖 智能识别（AI 自动选字段）", "✏️ 手动指定字段"],
+        index=0,
+        help="智能识别：AI 自动判断网站类型并选择默认字段，提交后可在结果中查看；手动指定：自己填写要提取的字段"
+    )
+
+    if extract_mode.startswith("🤖"):
+        query = ""
+        st.caption("AI 将自动识别网站类型并选择字段，无需手动输入")
+        with st.expander("支持的网站类别"):
+            for key, val in CATEGORY_TEMPLATES.items():
+                st.markdown(f"- **{val['name_zh']}** ({key}) — `{val['fields']}`")
+    else:
+        query = st.text_area("What do you want to Extract (fields):", height=80)
+
     url = st.text_area("Enter the URL:", height=75)
     method = st.selectbox("Select Scraping Method:", ["Crawl4AI", "Selenium"])
     start_button = st.button("Start Scraping")
@@ -260,10 +277,11 @@ else:
     if start_button:
         url = url.strip()
         query = query.strip()
+        is_smart_mode = extract_mode.startswith("🤖")
 
-        if not query:
-            st.error("Please enter what you want to extract.")
-        elif len(query) > 500:
+        if not is_smart_mode and not query:
+            st.error("请输入要提取的字段，或切换到智能识别模式。")
+        elif not is_smart_mode and len(query) > 500:
             st.error("Query is too long. Please keep it under 500 characters.")
         elif not url:
             st.error("Please enter the target URL.")
@@ -272,10 +290,10 @@ else:
         elif not validators.url(url):
             st.error("Please enter a valid URL (must start with http:// or https://).")
         else:
-
-            st.session_state.messages.append({"role": "user", "content": query + f"\n -> From : {url}"})
+            user_msg = (query if query else "[智能识别模式]") + f"\n -> From : {url}"
+            st.session_state.messages.append({"role": "user", "content": user_msg})
             with st.chat_message("user"):
-                st.markdown(query)
+                st.markdown(user_msg)
 
             # Scraping Process
             with st.chat_message("assistant"):
@@ -289,12 +307,46 @@ else:
                                 logger.info(f"Data scraped successfully from {url}")
 
                                 st.markdown(f"-> Scraping Data from {url}:")
-                                with st.expander("Scraped data Sample"): 
+                                with st.expander("Scraped data Sample"):
                                     st.code(scraped_data[:1000], language='markdown')
-                            
+
                         except Exception as e:
                             st.session_state.messages.append({"role": "assistant", "content": f"Error: {e}"})
                             st.rerun()
+
+                        # 智能识别：AI 分类网站并选择默认字段
+                        if is_smart_mode:
+                            with st.spinner("🤖 AI 正在识别网站类型..."):
+                                model_for_classify = selected_model if llm_provider == "Ollama" else llm_name
+                                category, default_fields = classify_website(
+                                    scraped_data,
+                                    llm_provider=llm_provider,
+                                    llm_model=model_for_classify
+                                )
+                                cat_info = get_category_info(category)
+
+                            # 仅在 general/forum 或字段过少时才适配,避免破坏已设计好的模板
+                            ADAPT_CATEGORIES = {"general", "forum"}
+                            if category in ADAPT_CATEGORIES or len(default_fields.split(",")) < 3:
+                                with st.spinner("🤖 AI 正在适配页面字段..."):
+                                    adapted_fields = adapt_fields_for_page(
+                                        scraped_data, category, default_fields,
+                                        llm_provider=llm_provider, llm_model=model_for_classify
+                                    )
+                            else:
+                                adapted_fields = default_fields
+
+                            if adapted_fields != default_fields:
+                                st.success(
+                                    f"✅ 识别为 **{cat_info['name_zh']}** ({category}) — "
+                                    f"默认字段: `{default_fields}` → 适配后: `{adapted_fields}`"
+                                )
+                            else:
+                                st.success(
+                                    f"✅ 识别为 **{cat_info['name_zh']}** ({category}) — "
+                                    f"使用字段: `{adapted_fields}`"
+                                )
+                            query = adapted_fields
 
                         try :
 

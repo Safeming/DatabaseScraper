@@ -5,6 +5,7 @@ import os
 import threading
 from database import init_db, create_job, list_jobs, get_results_for_job, get_job
 from pipeline import execute_pipeline
+from categories import CATEGORY_TEMPLATES
 
 init_db()
 
@@ -58,10 +59,21 @@ with st.form("batch_form"):
     )
 
     query = st.text_area(
-        "提取字段",
+        "提取字段（留空则启用智能识别，AI 自动判断字段）",
         height=60,
-        placeholder="title, price, description"
+        placeholder="title, price, description    （留空 = AI 自动识别）"
     )
+
+    smart_mode = st.checkbox(
+        "🤖 启用智能识别（AI 自动选字段）",
+        value=False,
+        help="勾选后将忽略上方字段输入，AI 会根据每个 URL 的内容自动选择合适的提取字段"
+    )
+
+    if smart_mode:
+        with st.expander("AI 支持识别的网站类别"):
+            for key, val in CATEGORY_TEMPLATES.items():
+                st.markdown(f"- **{val['name_zh']}** — `{val['fields']}`")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -91,6 +103,33 @@ with st.form("batch_form"):
 
     export_excel = st.checkbox("完成后自动导出 Excel", value=True)
 
+    # ─── 高级选项 ───
+    with st.expander("🔧 高级选项 (登录态 / 并发 / 重试)"):
+        cookies_input = st.text_area(
+            "Cookie (登录态采集 - 留空则匿名)",
+            height=80,
+            placeholder="name=value; name2=value2  （从浏览器 DevTools 复制）",
+            help="需要登录后才能访问的网站时填入。会强制使用 Selenium 抓取。"
+        )
+        cookie_domain = st.text_input(
+            "Cookie 适用域名 (可选)",
+            placeholder="example.com  （留空则自动从 URL 推断）",
+            help="某些站点要求显式指定 cookie domain"
+        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            url_workers = st.number_input(
+                "URL 并发数",
+                min_value=1, max_value=10, value=3,
+                help="同时处理的 URL 数(URL 内部分页仍串行)"
+            )
+        with col_b:
+            llm_max_retries = st.number_input(
+                "LLM 重试次数",
+                min_value=0, max_value=5, value=2,
+                help="提取 CSV 失败时的重试上限(校验:列数对齐 + 至少 1 行)"
+            )
+
     submitted = st.form_submit_button("提交任务")
 
 if submitted:
@@ -98,8 +137,8 @@ if submitted:
 
     if not urls:
         st.error("请输入至少一个 URL")
-    elif not query.strip():
-        st.error("请输入提取字段")
+    elif not smart_mode and not query.strip():
+        st.error("请输入提取字段，或勾选智能识别")
     else:
         cron_map = {
             "立即执行": None,
@@ -114,12 +153,20 @@ if submitted:
         pipeline_config = {
             "clean": {"remove_links": False},
             "store": {"export_excel": export_excel},
+            "smart_mode": smart_mode,
+            "cookies": cookies_input.strip() or None,
+            "cookie_domain": cookie_domain.strip() or None,
+            "url_workers": int(url_workers),
+            "llm_max_retries": int(llm_max_retries),
         }
+
+        # 智能模式下,query 作为占位符存入(pipeline 会在执行时替换)
+        final_query = query.strip() if query.strip() else "[智能识别]"
 
         job_id = create_job(
             name=job_name,
             urls=urls,
-            query=query.strip(),
+            query=final_query,
             method=method,
             llm_provider=llm_provider,
             llm_model=llm_model,

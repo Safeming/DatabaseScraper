@@ -352,10 +352,18 @@ def get_url_md(url, method="Selenium"):
 
 
 class SeleniumSession:
-    """Reusable Selenium session for multi-page scraping."""
+    """Reusable Selenium session for multi-page scraping. Optionally injects cookies."""
 
-    def __init__(self):
+    def __init__(self, cookies=None, cookie_domain=None):
+        """
+        :param cookies: Cookie 字符串(浏览器 DevTools 复制的 "name=val; name2=val2" 格式)
+                       或 list[dict](Selenium 原生格式)
+        :param cookie_domain: cookie 适用的域名(为 None 时从首个 URL 自动推断)
+        """
         self.driver = None
+        self.cookies = cookies
+        self.cookie_domain = cookie_domain
+        self._cookies_loaded = False
 
     def __enter__(self):
         self.driver = setup_selenium()
@@ -365,7 +373,62 @@ class SeleniumSession:
         if self.driver:
             self.driver.quit()
 
+    def _parse_cookie_string(self, cookie_str):
+        """将 'a=1; b=2' 格式的 cookie 字符串解析成 list[dict]。"""
+        cookies = []
+        for piece in cookie_str.split(";"):
+            piece = piece.strip()
+            if not piece or "=" not in piece:
+                continue
+            name, _, value = piece.partition("=")
+            cookies.append({"name": name.strip(), "value": value.strip()})
+        return cookies
+
+    def _inject_cookies(self, url):
+        """注入 cookies 到当前 driver。需要先 driver.get(domain) 才能 add_cookie。"""
+        if not self.cookies or self._cookies_loaded:
+            return
+
+        if isinstance(self.cookies, str):
+            cookie_list = self._parse_cookie_string(self.cookies)
+        else:
+            cookie_list = self.cookies
+
+        if not cookie_list:
+            return
+
+        # 推断 domain
+        domain = self.cookie_domain
+        if not domain:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc
+
+        # 必须先访问目标域才能 set cookie
+        try:
+            scheme = "https" if url.startswith("https") else "http"
+            self.driver.get(f"{scheme}://{domain}")
+        except Exception as e:
+            logger.warning(f"Pre-load for cookie injection failed: {e}")
+
+        injected = 0
+        for c in cookie_list:
+            cookie_dict = {"name": c["name"], "value": c["value"]}
+            # domain 可选,但加上更稳;有些站点会拒绝跨域 cookie
+            cookie_dict["domain"] = c.get("domain", domain)
+            try:
+                self.driver.add_cookie(cookie_dict)
+                injected += 1
+            except Exception as e:
+                logger.warning(f"add_cookie failed for {c['name']}: {e}")
+
+        self._cookies_loaded = True
+        logger.info(f"✅ Injected {injected} cookies for domain {domain}")
+
     def fetch_page(self, url, timeout=60):
+        # 首次访问前先注入 cookie
+        if self.cookies and not self._cookies_loaded:
+            self._inject_cookies(url)
+
         self.driver.get(url)
         WebDriverWait(self.driver, timeout).until(
             EC.presence_of_element_located((By.TAG_NAME, "body"))

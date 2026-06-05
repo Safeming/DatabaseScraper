@@ -2,9 +2,11 @@ import json
 import csv
 import re
 import logging
+import threading
 from io import StringIO
 from datetime import datetime
 from urllib.parse import urljoin
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from database import (
     update_job_status, add_result, update_result,
@@ -12,11 +14,21 @@ from database import (
 )
 from scraper import get_url_md, SeleniumSession, clean_markdown, clean_html, to_markdown, crawl4ai_scraper
 from pagination import find_next_page_url
-from generate_response import generate_response, generate_response2
+from generate_response import (
+    generate_response, generate_response2, classify_website,
+    generate_with_validation, adapt_fields_for_page
+)
+from categories import get_category_info
 
 logger = logging.getLogger(__name__)
 
 NEXT_KEYWORDS = ["next", "下一页", "next page", "»", "›", ">>", "next →", "next ›"]
+
+# 并发与限流配置
+DEFAULT_URL_WORKERS = 3      # 同时抓取的 URL 数（每个 URL 内部分页仍串行）
+DEFAULT_LLM_CONCURRENCY = 2  # 同时调用 LLM 的最大数（避免 rate limit）
+_LLM_SEMAPHORE = threading.Semaphore(DEFAULT_LLM_CONCURRENCY)
+_DB_LOCK = threading.Lock()  # SQLite 写入串行化
 
 
 def find_next_page_in_markdown(md_content, current_url):
@@ -116,6 +128,68 @@ def repair_csv_rows(rows, header_fields):
 
     return repaired
 
+def _row_signature(row):
+    """生成行指纹用于去重。优先使用第一个非空字段作为主键,完全相同的行视为重复。"""
+    if not row:
+        return None
+    # 用所有字段的 JSON 序列化作为完整指纹
+    return json.dumps(row, sort_keys=True, ensure_ascii=False)
+
+
+def _row_primary_signature(row):
+    """更宽松的去重指纹: 只看前两个字段 (通常是主键如 title + author)。
+    用于检测 LLM 循环输出 (整行一字不差地重复)。"""
+    if not row:
+        return None
+    keys = list(row.keys())[:2]
+    parts = []
+    for k in keys:
+        v = (row.get(k) or "").strip().lower()
+        parts.append(v)
+    sig = "|".join(parts)
+    # 全空或全 N/A 不视为有效指纹
+    if not sig.replace("|", "").replace("n/a", "").strip():
+        return None
+    return sig
+
+
+def deduplicate_within_batch(rows):
+    """在同一批 LLM 输出内去重 (防止 LLM 循环输出 / 重复输出)。"""
+    if not rows:
+        return rows
+
+    seen_full = set()
+    seen_primary = set()
+    unique = []
+    dropped_full = 0
+    dropped_primary = 0
+
+    for row in rows:
+        full_sig = _row_signature(row)
+        primary_sig = _row_primary_signature(row)
+
+        # 完全相同 -> 丢
+        if full_sig in seen_full:
+            dropped_full += 1
+            continue
+        # 主键相同(即使其他字段略有差异)也丢
+        if primary_sig and primary_sig in seen_primary:
+            dropped_primary += 1
+            continue
+
+        seen_full.add(full_sig)
+        if primary_sig:
+            seen_primary.add(primary_sig)
+        unique.append(row)
+
+    if dropped_full or dropped_primary:
+        logger.info(
+            f"In-batch dedup: {len(rows)} -> {len(unique)} rows "
+            f"(removed {dropped_full} exact dups, {dropped_primary} primary-key dups)"
+        )
+    return unique
+
+
 def deduplicate_rows(job_id, new_rows):
     """Remove rows that already exist in the database for this job."""
     from database import get_job_data
@@ -146,15 +220,29 @@ def stage_scrape(url, job):
     follow_pagination = job.get("follow_pagination", 0)
     max_pages = job.get("max_pages", 5)
 
+    # 登录态: cookies 字符串放在 pipeline_config.cookies
+    config = json.loads(job.get("pipeline_config") or "{}")
+    cookies = config.get("cookies") or None
+    cookie_domain = config.get("cookie_domain") or None
+    if cookies:
+        # 有 cookies 时强制走 Selenium(Crawl4AI 不支持注入 cookie)
+        if method != "Selenium":
+            logger.info(f"Cookies provided, switching method to Selenium for {url}")
+        method = "Selenium"
+
     pages = []
 
     if not follow_pagination:
-        md = get_url_md(url, method)
+        if method == "Selenium" and cookies:
+            with SeleniumSession(cookies=cookies, cookie_domain=cookie_domain) as session:
+                md, _ = session.scrape_to_markdown(url)
+        else:
+            md = get_url_md(url, method)
         pages.append({"url": url, "page_number": 1, "markdown": md, "html": None})
         return pages
 
     if method == "Selenium":
-        with SeleniumSession() as session:
+        with SeleniumSession(cookies=cookies, cookie_domain=cookie_domain) as session:
             current_url = url
             for page_num in range(1, max_pages + 1):
                 logger.info(f"Scraping page {page_num}: {current_url}")
@@ -219,13 +307,20 @@ def stage_clean(markdown, job):
 
 
 def stage_extract(cleaned_md, query, job):
+    """LLM 提取,带校验+重试,信号量限流。"""
     llm_provider = job.get("llm_provider", "Ollama")
     llm_model = job.get("llm_model", "")
+    config = json.loads(job.get("pipeline_config") or "{}")
+    max_retries = config.get("llm_max_retries", 2)
 
-    if llm_provider == "Ollama":
-        return generate_response(llm_model, query, cleaned_md)
-    else:
-        return generate_response2(query, cleaned_md, llm_model)
+    with _LLM_SEMAPHORE:
+        return generate_with_validation(
+            query=query,
+            scraped_data=cleaned_md,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            max_retries=max_retries,
+        )
 
 
 def stage_store(job_id, result_id, csv_text):
@@ -237,12 +332,101 @@ def stage_store(job_id, result_id, csv_text):
     header_fields = list(rows[0].keys()) if rows else []
     rows = repair_csv_rows(rows, header_fields)
 
-    # Deduplicate against existing data for this job
-    rows = deduplicate_rows(job_id, rows)
+    # Stage 4a: 同批次内去重 (防 LLM 循环输出)
+    rows = deduplicate_within_batch(rows)
 
-    if rows:
-        store_extracted_rows(job_id, result_id, rows)
+    # Stage 4b: 跨任务去重 (DB read+write under lock)
+    with _DB_LOCK:
+        rows = deduplicate_rows(job_id, rows)
+        if rows:
+            store_extracted_rows(job_id, result_id, rows)
     return len(rows)
+
+
+def _process_single_url(url, job, smart_mode, llm_provider, llm_model, default_query):
+    """处理单个 URL 的完整流水线(可并发执行的最小单元)。返回该 URL 抓到的行数。"""
+    job_id = job["id"]
+    rows_count = 0
+
+    # Stage 1: Scrape (可能是多页)
+    try:
+        pages = stage_scrape(url, job)
+    except Exception as e:
+        logger.error(f"[URL {url}] stage_scrape failed: {e}")
+        return 0
+
+    # Smart mode 分类只在该 URL 范围内做一次
+    url_query = default_query
+    if smart_mode and pages:
+        first_md = next(
+            (p["markdown"] for p in pages if p.get("markdown") and len(p["markdown"]) > 100),
+            pages[0].get("markdown", "")
+        )
+        try:
+            with _LLM_SEMAPHORE:
+                category, default_fields = classify_website(
+                    first_md, llm_provider=llm_provider, llm_model=llm_model
+                )
+            cat_info = get_category_info(category)
+            url_query = default_fields
+
+            # 仅在兜底类别或字段数过少时才尝试自适应,避免破坏已设计好的模板
+            ADAPT_CATEGORIES = {"general", "forum"}
+            if category in ADAPT_CATEGORIES or len(default_fields.split(",")) < 3:
+                with _LLM_SEMAPHORE:
+                    adapted = adapt_fields_for_page(
+                        first_md, category, default_fields,
+                        llm_provider=llm_provider, llm_model=llm_model
+                    )
+                url_query = adapted
+
+            logger.info(
+                f"[URL {url}] classified as [{category} / {cat_info['name_zh']}], "
+                f"final fields: {url_query}"
+            )
+        except Exception as e:
+            logger.warning(f"[URL {url}] smart classify failed: {e}, fallback to general")
+            url_query = "title, description, url, date"
+
+    consecutive_empty = 0
+    for page in pages:
+        with _DB_LOCK:
+            result_id = add_result(job_id, page["url"], page["page_number"])
+
+        try:
+            with _DB_LOCK:
+                update_result(result_id, status="scraped", raw_markdown=page["markdown"][:5000])
+
+            cleaned = stage_clean(page["markdown"], job)
+            csv_text = stage_extract(cleaned, url_query, job)
+
+            with _DB_LOCK:
+                update_result(result_id, status="extracted", extracted_csv=csv_text)
+
+            row_count = stage_store(job_id, result_id, csv_text)
+            rows_count += row_count
+
+            with _DB_LOCK:
+                update_result(result_id, status="stored", row_count=row_count)
+
+            if row_count == 0:
+                consecutive_empty += 1
+                logger.warning(
+                    f"[URL {url}] page {page['page_number']} yielded 0 rows "
+                    f"(consecutive: {consecutive_empty})"
+                )
+                if consecutive_empty >= 2:
+                    logger.info(f"[URL {url}] 2 consecutive empty pages, stopping")
+                    break
+            else:
+                consecutive_empty = 0
+
+        except Exception as e:
+            logger.error(f"[URL {url}] page {page['page_number']} failed: {e}")
+            with _DB_LOCK:
+                update_result(result_id, status="failed", error_message=str(e))
+
+    return rows_count
 
 
 def execute_pipeline(job):
@@ -250,52 +434,42 @@ def execute_pipeline(job):
     query = job["query"]
     urls = json.loads(job["urls"]) if isinstance(job["urls"], str) else job["urls"]
 
+    config = json.loads(job.get("pipeline_config") or "{}")
+    smart_mode = config.get("smart_mode", False)
+    llm_provider = job.get("llm_provider", "Ollama")
+    llm_model = job.get("llm_model", "")
+    url_workers = config.get("url_workers", DEFAULT_URL_WORKERS)
+    # 限制并发数不超过 URL 数,且不小于 1
+    url_workers = max(1, min(url_workers, len(urls))) if urls else 1
+
     update_job_status(job_id, "running")
     total_rows = 0
 
     try:
-        for url in urls:
-            # Stage 1: Scrape
-            pages = stage_scrape(url, job)
-
-            consecutive_empty = 0
-            for page in pages:
-                result_id = add_result(job_id, page["url"], page["page_number"])
-
-                try:
-                    # Stage 2: Clean
-                    update_result(result_id, status="scraped", raw_markdown=page["markdown"][:5000])
-                    cleaned = stage_clean(page["markdown"], job)
-
-                    # Stage 3: Extract
-                    csv_text = stage_extract(cleaned, query, job)
-                    import re
-                    csv_text = re.sub(r"^.*?</think>", "", csv_text, flags=re.DOTALL).strip()
-                    csv_text = re.sub(r'```(?:csv|CSV)?\s*\n?', '', csv_text)
-                    csv_text = re.sub(r'```\s*$', '', csv_text, flags=re.MULTILINE)
-                    update_result(result_id, status="extracted", extracted_csv=csv_text)
-
-                    # Stage 4: Store
-                    row_count = stage_store(job_id, result_id, csv_text)
-                    total_rows += row_count
-                    update_result(result_id, status="stored", row_count=row_count)
-
-                    # Stop pagination if page yields no data
-                    if row_count == 0:
-                        consecutive_empty += 1
-                        logger.warning(f"Page {page['page_number']} yielded 0 rows (consecutive: {consecutive_empty})")
-                        if consecutive_empty >= 2:
-                            logger.info("2 consecutive empty pages, stopping extraction for this URL")
-                            break
-                    else:
-                        consecutive_empty = 0
-
-                except Exception as e:
-                    logger.error(f"Error processing {page['url']} page {page['page_number']}: {e}")
-                    update_result(result_id, status="failed", error_message=str(e))
+        if url_workers <= 1 or len(urls) <= 1:
+            # 串行模式(单 URL 或显式禁用并发)
+            for url in urls:
+                total_rows += _process_single_url(
+                    url, job, smart_mode, llm_provider, llm_model, query
+                )
+        else:
+            logger.info(f"Job {job_id}: processing {len(urls)} URLs with {url_workers} workers")
+            with ThreadPoolExecutor(max_workers=url_workers) as executor:
+                futures = {
+                    executor.submit(
+                        _process_single_url,
+                        url, job, smart_mode, llm_provider, llm_model, query
+                    ): url
+                    for url in urls
+                }
+                for future in as_completed(futures):
+                    url = futures[future]
+                    try:
+                        total_rows += future.result()
+                    except Exception as e:
+                        logger.error(f"[URL {url}] worker exception: {e}")
 
         # Stage 5: Export Excel if configured
-        config = json.loads(job.get("pipeline_config") or "{}")
         if config.get("store", {}).get("export_excel", False):
             import os
             export_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exports")
