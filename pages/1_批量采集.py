@@ -133,7 +133,20 @@ with st.form("batch_form"):
     submitted = st.form_submit_button("提交任务")
 
 if submitted:
-    urls = [u.strip() for u in urls_text.strip().split("\n") if u.strip()]
+    raw_urls = [u.strip() for u in urls_text.strip().split("\n") if u.strip()]
+    # 自动补全协议头(用户经常忘填 http://)
+    urls = []
+    auto_fixed = []
+    for u in raw_urls:
+        if not u.lower().startswith(("http://", "https://")):
+            fixed = "https://" + u
+            auto_fixed.append((u, fixed))
+            urls.append(fixed)
+        else:
+            urls.append(u)
+    if auto_fixed:
+        for orig, fixed in auto_fixed:
+            st.warning(f"⚠️ URL 已自动补全协议头:`{orig}` → `{fixed}`")
 
     if not urls:
         st.error("请输入至少一个 URL")

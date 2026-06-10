@@ -7,10 +7,13 @@ openai
 openpyxl
 pandas
 playwright
+plotly
+PyMySQL
 python-dotenv
 Requests
 schedule
 selenium
+SQLAlchemy>=2.0
 streamlit
 tiktoken
 validators

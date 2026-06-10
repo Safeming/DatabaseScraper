@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from database import (
-    update_job_status, add_result, update_result,
+    update_job_status, update_job_category, add_result, update_result,
     store_extracted_rows, export_to_excel, get_job
 )
 from scraper import get_url_md, SeleniumSession, clean_markdown, clean_html, to_markdown, crawl4ai_scraper
@@ -70,12 +70,82 @@ def find_next_page_in_markdown(md_content, current_url):
     return None
 
 
+def _fix_malformed_header(csv_text: str) -> str:
+    """LLM 偶尔会把引号写错(比如 \"title,\"author\" 把第一个引号闭合到逗号后),
+    导致 csv.DictReader 把多个字段合成一个 header。这里自动修复:
+    - 检测第一行(表头)中含有逗号的字段名(明显异常)
+    - 用启发式拆分:在每个字母后跟着 "," 的位置切开
+    """
+    if not csv_text:
+        return csv_text
+
+    lines = csv_text.splitlines()
+    if not lines:
+        return csv_text
+
+    header = lines[0]
+    # 把表头里所有引号去掉,然后重新按逗号切分,看字段名里是否含逗号(异常信号)
+    import csv as _csv
+    from io import StringIO
+    try:
+        parsed_header = next(_csv.reader(StringIO(header)))
+    except Exception:
+        return csv_text
+
+    # 如果某个字段名里含逗号 → 表头损坏,需要修复
+    if not any("," in h for h in parsed_header):
+        return csv_text
+
+    # 修复:去掉表头所有引号,按"非引号逗号"切分,每段两端补正确引号
+    clean_header = header.replace('"', '').replace("'", '')
+    fixed_fields = [f.strip() for f in clean_header.split(",") if f.strip()]
+    if not fixed_fields:
+        return csv_text
+    new_header = ",".join(f'"{f}"' for f in fixed_fields)
+    logger.info(f"Fixed malformed CSV header: {header[:100]} -> {new_header[:100]}")
+    return new_header + "\n" + "\n".join(lines[1:])
+
+
 def parse_csv_to_rows(csv_text):
+    csv_text = _fix_malformed_header(csv_text)
     lines = [l.strip() for l in csv_text.splitlines() if l.strip()]
     if not lines:
         return []
     reader = csv.DictReader(StringIO(csv_text))
-    return [row for row in reader]
+    rows = []
+    for row in reader:
+        # csv.DictReader 把多余列放在 row[None] = list,要清理掉避免下游 .strip() 崩
+        # 把多余字段合并回最后一个表头列
+        extras = row.pop(None, None)
+        if extras and row:
+            last_key = list(row.keys())[-1]
+            tail = ",".join(str(x) for x in extras if x)
+            row[last_key] = f"{row[last_key]},{tail}" if row.get(last_key) else tail
+        # 过滤掉所有非字符串值,确保下游 .strip() 安全
+        clean_row = {}
+        for k, v in row.items():
+            if k is None:
+                continue
+            if isinstance(v, list):
+                v = ",".join(str(x) for x in v if x)
+            elif v is None:
+                v = ""
+            else:
+                v = str(v)
+            clean_row[k] = v
+        rows.append(clean_row)
+    return rows
+
+
+def _safe_str(v) -> str:
+    """安全地把任意值转成 string,处理 list/None/数字等异常情况"""
+    if v is None:
+        return ""
+    if isinstance(v, list):
+        return ",".join(str(x) for x in v if x)
+    if not isinstance(v, str):
+        return str(v)
+    return v
 
 
 def repair_csv_rows(rows, header_fields):
@@ -86,15 +156,15 @@ def repair_csv_rows(rows, header_fields):
     repaired = []
     for row in rows:
         # Skip completely empty rows
-        if all(not v or not v.strip() for v in row.values()):
+        if all(not _safe_str(v).strip() for v in row.values()):
             continue
 
         fields = list(row.keys())
         if len(fields) >= 2:
             last_field = fields[-1]
             first_field = fields[0]
-            first_val = (row.get(first_field) or "").strip()
-            last_val = (row.get(last_field) or "").strip()
+            first_val = _safe_str(row.get(first_field)).strip()
+            last_val = _safe_str(row.get(last_field)).strip()
 
             # Fix: quote contains "by Author Name" at end while author column also has the name
             if last_val and first_val:
@@ -119,7 +189,7 @@ def repair_csv_rows(rows, header_fields):
 
         # Clean up stray escape characters and extra quotes
         for field in fields:
-            val = row.get(field) or ""
+            val = _safe_str(row.get(field))
             val = val.replace('\\', '').strip()
             val = re.sub(r'^["\x27]+|["\x27]+$', '', val)
             row[field] = val.strip()
@@ -323,7 +393,7 @@ def stage_extract(cleaned_md, query, job):
         )
 
 
-def stage_store(job_id, result_id, csv_text):
+def stage_store(job_id, result_id, csv_text, category=None):
     rows = parse_csv_to_rows(csv_text)
     if not rows:
         return 0
@@ -338,9 +408,16 @@ def stage_store(job_id, result_id, csv_text):
     # Stage 4b: 跨任务去重 (DB read+write under lock)
     with _DB_LOCK:
         rows = deduplicate_rows(job_id, rows)
-        if rows:
-            store_extracted_rows(job_id, result_id, rows)
-    return len(rows)
+        if not rows:
+            return 0
+        # 返回真实入库数(可能因为字段缺失被 store 内部跳过,小于 len(rows))
+        actual_inserted = store_extracted_rows(job_id, result_id, rows, category=category)
+    if actual_inserted < len(rows):
+        logger.warning(
+            f"Job {job_id} result {result_id}: store dropped {len(rows) - actual_inserted}/{len(rows)} rows "
+            f"(category={category}); often means LLM CSV missing required fields like 'title'"
+        )
+    return actual_inserted
 
 
 def _process_single_url(url, job, smart_mode, llm_provider, llm_model, default_query):
@@ -357,6 +434,7 @@ def _process_single_url(url, job, smart_mode, llm_provider, llm_model, default_q
 
     # Smart mode 分类只在该 URL 范围内做一次
     url_query = default_query
+    detected_category: str | None = None
     if smart_mode and pages:
         first_md = next(
             (p["markdown"] for p in pages if p.get("markdown") and len(p["markdown"]) > 100),
@@ -367,6 +445,7 @@ def _process_single_url(url, job, smart_mode, llm_provider, llm_model, default_q
                 category, default_fields = classify_website(
                     first_md, llm_provider=llm_provider, llm_model=llm_model
                 )
+            detected_category = category
             cat_info = get_category_info(category)
             url_query = default_fields
 
@@ -379,6 +458,13 @@ def _process_single_url(url, job, smart_mode, llm_provider, llm_model, default_q
                         llm_provider=llm_provider, llm_model=llm_model
                     )
                 url_query = adapted
+
+            # 把分类结果写回 jobs.category_id (只写一次)
+            try:
+                with _DB_LOCK:
+                    update_job_category(job_id, category)
+            except Exception as e:
+                logger.warning(f"[URL {url}] failed to update job category: {e}")
 
             logger.info(
                 f"[URL {url}] classified as [{category} / {cat_info['name_zh']}], "
@@ -394,16 +480,29 @@ def _process_single_url(url, job, smart_mode, llm_provider, llm_model, default_q
             result_id = add_result(job_id, page["url"], page["page_number"])
 
         try:
-            with _DB_LOCK:
-                update_result(result_id, status="scraped", raw_markdown=page["markdown"][:5000])
+            md = page["markdown"]
 
-            cleaned = stage_clean(page["markdown"], job)
+            # 抓取阶段就失败的页面不要送 LLM
+            if not md or md.startswith("Error") or "Selenium failed" in md or len(md.strip()) < 50:
+                err = (md[:200] if md else "empty markdown")
+                logger.warning(f"[URL {url}] page {page['page_number']} scrape failed/empty: {err}")
+                with _DB_LOCK:
+                    update_result(result_id, status="failed", error_message=f"scrape failed: {err}")
+                consecutive_empty += 1
+                if consecutive_empty >= 2:
+                    break
+                continue
+
+            with _DB_LOCK:
+                update_result(result_id, status="scraped", raw_markdown=md[:5000])
+
+            cleaned = stage_clean(md, job)
             csv_text = stage_extract(cleaned, url_query, job)
 
             with _DB_LOCK:
                 update_result(result_id, status="extracted", extracted_csv=csv_text)
 
-            row_count = stage_store(job_id, result_id, csv_text)
+            row_count = stage_store(job_id, result_id, csv_text, category=detected_category)
             rows_count += row_count
 
             with _DB_LOCK:

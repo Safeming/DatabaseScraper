@@ -412,6 +412,29 @@ def _expected_field_count(query):
     return len(parts)
 
 
+def _try_fix_malformed_header(text: str, expected: int) -> str:
+    """如果 header 中某个字段名含逗号(说明 LLM 引号位置错乱),尝试用预期字段数硬切表头。"""
+    if not text or expected <= 0:
+        return text
+    lines = text.splitlines()
+    if not lines:
+        return text
+    header_line = lines[0]
+    try:
+        parsed_header = next(csv.reader(StringIO(header_line)))
+    except Exception:
+        return text
+    # 字段名含逗号 = 引号开错位置
+    if any("," in h for h in parsed_header):
+        clean = header_line.replace('"', '').replace("'", '')
+        fields = [f.strip() for f in clean.split(",") if f.strip()]
+        # 仅当切出来正好等于 expected 时才修复
+        if len(fields) == expected:
+            new_header = ",".join(f'"{f}"' for f in fields)
+            return new_header + "\n" + "\n".join(lines[1:])
+    return text
+
+
 def validate_csv_output(raw_text, query, min_rows=1):
     """
     Validate LLM CSV output. Returns (is_valid, reason, parsed_rows).
@@ -425,6 +448,10 @@ def validate_csv_output(raw_text, query, min_rows=1):
     text = _strip_csv_wrappers(raw_text)
     if not text:
         return False, "empty output", []
+
+    expected = _expected_field_count(query)
+    # 尝试修复 LLM 引号错位导致的畸形表头(把 "a,"b","c" 修成 "a","b","c")
+    text = _try_fix_malformed_header(text, expected)
 
     lines = [l for l in text.splitlines() if l.strip()]
     if len(lines) < 1 + min_rows:
@@ -441,7 +468,6 @@ def validate_csv_output(raw_text, query, min_rows=1):
 
     header = rows[0]
     header_cols = len(header)
-    expected = _expected_field_count(query)
 
     if expected > 0 and abs(header_cols - expected) > 1:
         return False, f"header columns {header_cols} != expected {expected}", []
@@ -490,7 +516,9 @@ def generate_with_validation(query, scraped_data, llm_provider="Ollama",
         if is_valid:
             if attempt > 0:
                 logger.info(f"LLM output validated on attempt {attempt + 1}")
-            return _strip_csv_wrappers(raw)
+            # 返回经过 header 修复的文本,确保下游解析能拿到正确表头
+            stripped = _strip_csv_wrappers(raw)
+            return _try_fix_malformed_header(stripped, _expected_field_count(query))
 
         logger.warning(
             f"LLM attempt {attempt + 1} produced invalid CSV ({reason}), retrying..."

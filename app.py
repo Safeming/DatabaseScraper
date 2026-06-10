@@ -140,6 +140,9 @@ def llm_response_to_df(response, url=None, load=False):
             st.download_button("📥 Download Text", df.to_string(index=False), file_name=f"{file_name}.txt", mime="text/plain", key=f"text_{random_string(10)}")
             st.download_button("📥 Download HTML", df.to_html(index=False, escape=False), file_name=f"{file_name}.html", mime="text/html", key=f"html_{random_string(10)}")
 
+        # ─── 一键存入数据库 (load=True 时也渲染,确保重跑后按钮还在) ───
+        _render_save_to_db(df, url)
+
     except Exception as e:
         # Save error to session and show on screen
         if not load:
@@ -150,6 +153,87 @@ def llm_response_to_df(response, url=None, load=False):
             })
 
         st.error(f"❌ Failed to parse CSV output: {e}")
+
+
+def _render_save_to_db(df, url):
+    """渲染"存入数据库"折叠区:让用户选类别,把当前 df 入库到 MySQL 对应专属表。"""
+    import hashlib
+    from categories import CATEGORY_TEMPLATES, get_category_info
+    from database import create_job, add_result, update_result, update_job_status, store_extracted_rows
+
+    # 用 url + 行数 + 第一行内容 算稳定 key,避免 Streamlit 重跑时按钮失效
+    sig = f"{url or 'no-url'}|{len(df)}|{str(df.iloc[0].to_dict()) if len(df) else ''}"
+    sig_hash = hashlib.md5(sig.encode("utf-8")).hexdigest()[:10]
+
+    with st.expander("💾 存入数据库"):
+        st.caption("把当前结果按类别保存到 MySQL,books/quotes/products 等会进入对应专属表。")
+
+        cat_options = [(k, v["name_zh"]) for k, v in CATEGORY_TEMPLATES.items()]
+        cat_labels = [f"{name} ({code})" for code, name in cat_options]
+
+        # 默认从 session 取上次智能识别的类别
+        default_idx = 0
+        last_cat = st.session_state.get("last_category")
+        if last_cat:
+            for i, (code, _) in enumerate(cat_options):
+                if code == last_cat:
+                    default_idx = i
+                    break
+
+        col1, col2 = st.columns([2, 1])
+        chosen = col1.selectbox(
+            "选择类别",
+            cat_labels,
+            index=default_idx,
+            key=f"cat_sel_{sig_hash}",
+            help="智能识别已自动设定;手动模式可在此处选择",
+        )
+        category_code = cat_options[cat_labels.index(chosen)][0]
+
+        info = get_category_info(category_code)
+        col2.markdown(f"**字段**:`{info['fields']}`")
+
+        # 已经入库过的标记(避免重复入库)
+        saved_flag_key = f"saved_{sig_hash}"
+        if st.session_state.get(saved_flag_key):
+            st.info(f"✅ 此结果已保存(Job ID: {st.session_state[saved_flag_key]}),可在数据浏览页查看。")
+            return
+
+        save_btn = st.button("💾 保存到数据库", key=f"save_{sig_hash}")
+        if save_btn:
+            try:
+                rows = df.to_dict(orient="records")
+                job_id = create_job(
+                    name=f"快速抓取-{category_code}",
+                    urls=[url] if url else [],
+                    query=info["fields"],
+                    method="Crawl4AI",
+                    llm_provider="Ollama",
+                    llm_model="manual",
+                    follow_pagination=False,
+                    pipeline_config={"source": "app.py 主页"},
+                    category_code=category_code,
+                )
+                update_job_status(job_id, "running")
+                result_id = add_result(job_id, url or "(no url)", page_number=1)
+                inserted = store_extracted_rows(job_id, result_id, rows, category=category_code)
+                update_result(result_id, status="stored", row_count=inserted)
+                update_job_status(job_id, "completed")
+
+                if inserted > 0:
+                    st.session_state[saved_flag_key] = job_id
+                    st.success(f"✅ 已入库 {inserted} 行到 **{info['name_zh']}** 类别(Job ID: {job_id})")
+                    st.caption("到 [数据浏览] 或 [统计仪表盘] 页查看")
+                else:
+                    st.warning(
+                        "⚠️ 入库 0 行。可能字段名不匹配(如 LLM 输出 'name' 但 books 类期望 'title'),"
+                        "或核心字段(如 title)为空。下载 CSV 检查后改用其他类别试试。"
+                    )
+            except Exception as e:
+                st.error(f"❌ 入库失败: {e}")
+                import traceback
+                with st.expander("详细错误"):
+                    st.code(traceback.format_exc())
 
 
 def get_available_models():
@@ -347,6 +431,8 @@ else:
                                     f"使用字段: `{adapted_fields}`"
                                 )
                             query = adapted_fields
+                            # 把识别到的类别存入 session,让"存入数据库"按钮默认选中此类
+                            st.session_state.last_category = category
 
                         try :
 
