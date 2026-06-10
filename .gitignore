@@ -4,6 +4,20 @@ cache/
 notebooks/
 chrome-linux64/
 venv/
+.venv/
 .env
 *.db
+*.sqlite
+*.sqlite3
 exports/
+migration_failed.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

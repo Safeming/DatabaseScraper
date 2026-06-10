@@ -1,21 +1,40 @@
-beautifulsoup4
-crawl4ai
-croniter
-html2text
-ollama
-openai
-openpyxl
-pandas
-playwright
-plotly
-PyMySQL
-python-dotenv
-Requests
-schedule
-selenium
+# AI-Scraper 项目依赖
+# 安装方式: pip install -r requirements.txt
+# 推荐 Python 3.10+ (Conda 环境)
+
+# ─── Web UI ───
+streamlit==1.57.0
+
+# ─── 网页抓取 ───
+crawl4ai==0.8.6
+playwright==1.60.0
+selenium==4.44.0
+webdriver-manager==4.1.1
+beautifulsoup4==4.14.3
+html2text==2025.4.15
+requests==2.34.2
+validators==0.35.0
+
+# ─── LLM 集成 ───
+ollama==0.6.2
+openai==2.38.0
+tiktoken==0.13.0
+
+# ─── 数据库 (MySQL) ───
 SQLAlchemy>=2.0
-streamlit
-tiktoken
-validators
-webdriver_manager
-tabulate
+PyMySQL==1.2.0
+
+# ─── 数据处理与导出 ───
+pandas==2.3.3
+openpyxl==3.1.5
+tabulate==0.10.0
+
+# ─── 可视化 ───
+plotly==6.8.0
+
+# ─── 任务调度 ───
+schedule==1.2.2
+croniter==6.2.2
+
+# ─── 配置管理 ───
+python-dotenv==1.2.2
