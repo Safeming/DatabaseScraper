@@ -6,23 +6,18 @@ from sqlalchemy import text
 
 from database import init_db
 from db.connection import get_engine
+from ui_theme import apply_theme, page_header
 
+apply_theme(page_title="数据库结构 · AI-Scraper", page_icon="▣")
 init_db()
 engine = get_engine()
 
-st.set_page_config(page_title="数据库结构", page_icon="🗂️", layout="wide")
-st.markdown("""
-<style>
-    [data-testid="stToolbar"] {display: none !important;}
-    .stDeployButton {display: none !important;}
-    #MainMenu {display: none !important;}
-    header {visibility: hidden !important;}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("### 🗂️ 数据库结构")
-st.caption("从 information_schema 动态读取的实时元数据。")
-st.markdown("---")
+page_header(
+    eyebrow="meta / schema",
+    title="数据库结构",
+    subtitle="从 information_schema 实时读取的表 / 列 / 索引 / 外键 / 触发器 / 视图元数据。",
+    active_stage="store",
+)
 
 # ─── ER 图 ───
 import os

@@ -6,23 +6,17 @@ import threading
 from database import init_db, create_job, list_jobs, get_results_for_job, get_job
 from pipeline import execute_pipeline
 from categories import CATEGORY_TEMPLATES
+from ui_theme import apply_theme, page_header, section
 
+apply_theme(page_title="批量采集 · AI-Scraper", page_icon="▣")
 init_db()
 
-st.set_page_config(page_title="批量采集", page_icon="📦")
-
-st.markdown("""
-<style>
-    [data-testid="stToolbar"] {display: none !important;}
-    .stDeployButton {display: none !important;}
-    #MainMenu {display: none !important;}
-    header {visibility: hidden !important;}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("### 批量采集")
-st.markdown("支持多 URL 输入、自动翻页、定时调度")
-st.markdown("---")
+page_header(
+    eyebrow="jobs / batch",
+    title="批量采集",
+    subtitle="提交多个 URL,后台并发抓取并入库到 MySQL。可配置翻页深度、定时调度、登录态 Cookie。",
+    active_stage="scrape",
+)
 
 
 def get_ollama_models():
@@ -199,8 +193,7 @@ if submitted:
             thread.start()
 
 # ─── 活跃任务状态 ───
-st.markdown("---")
-st.markdown("#### 活跃任务")
+section("活跃任务", eyebrow="WHERE status IN ('running','pending')")
 
 active_jobs = list_jobs(status="running") + list_jobs(status="pending")
 

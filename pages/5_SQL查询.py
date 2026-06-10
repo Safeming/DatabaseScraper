@@ -8,22 +8,17 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from database import init_db
 from db.connection import get_readonly_engine
+from ui_theme import apply_theme, page_header
 
+apply_theme(page_title="SQL 查询 · AI-Scraper", page_icon="▣")
 init_db()
 
-st.set_page_config(page_title="SQL 查询器", page_icon="🔍", layout="wide")
-st.markdown("""
-<style>
-    [data-testid="stToolbar"] {display: none !important;}
-    .stDeployButton {display: none !important;}
-    #MainMenu {display: none !important;}
-    header {visibility: hidden !important;}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("### 🔍 SQL 查询器")
-st.caption("使用只读账号执行 SQL,演示 JOIN / 子查询 / GROUP BY / 窗口函数等技巧。")
-st.markdown("---")
+page_header(
+    eyebrow="data / query",
+    title="SQL 查询",
+    subtitle="使用只读账号 ai_scraper_ro 执行查询。预设示例覆盖 JOIN / 子查询 / 窗口函数 / 全文索引等。",
+    active_stage="analyze",
+)
 
 
 # ─── 安全检查:只允许 SELECT / SHOW / DESCRIBE / EXPLAIN ───
@@ -144,6 +139,10 @@ explain_btn = c2.button("🧠 EXPLAIN", width="stretch")
 
 if run_btn or explain_btn:
     sql = sql_input.strip().rstrip(";")
+
+    if not sql:
+        st.warning("请输入 SQL 或从右侧选择一个预设示例")
+        st.stop()
 
     if explain_btn and not sql.upper().startswith("EXPLAIN"):
         sql = f"EXPLAIN {sql}"

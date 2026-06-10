@@ -5,22 +5,17 @@ from sqlalchemy import text
 
 from database import init_db
 from db.connection import get_engine
+from ui_theme import apply_theme, page_header
 
+apply_theme(page_title="数据浏览 · AI-Scraper", page_icon="▣")
 init_db()
 
-st.set_page_config(page_title="数据浏览", page_icon="📂", layout="wide")
-st.markdown("""
-<style>
-    [data-testid="stToolbar"] {display: none !important;}
-    .stDeployButton {display: none !important;}
-    #MainMenu {display: none !important;}
-    header {visibility: hidden !important;}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("### 📂 数据浏览")
-st.caption("按类别浏览已采集到 MySQL 的结构化数据。每个 tab 底部展示对应 SQL。")
-st.markdown("---")
+page_header(
+    eyebrow="data / explore",
+    title="数据浏览",
+    subtitle="按类别浏览 MySQL 中的结构化数据。每个 tab 底部展开可查看实际 SQL。",
+    active_stage="explore",
+)
 
 engine = get_engine()
 

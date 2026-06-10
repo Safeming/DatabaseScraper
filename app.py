@@ -269,19 +269,15 @@ def remove_tags(text):
 # Fetch available models
 available_models = get_available_models()
 
-st.set_page_config(page_title="Scraper", page_icon='🤖', menu_items={})
+from ui_theme import apply_theme, page_header
+apply_theme(page_title="AI-Scraper", page_icon="▣")
 
-st.markdown("""
-<style>
-    [data-testid="stToolbar"] {display: none !important;}
-    .stDeployButton {display: none !important;}
-    #MainMenu {display: none !important;}
-    header {visibility: hidden !important;}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("### AI Scraper App - Extract Data From Websites")
-st.markdown("---")
+page_header(
+    eyebrow="quick / scrape",
+    title="AI-Scraper",
+    subtitle="输入一个 URL,AI 自动识别网站类型并提取结构化数据。批量任务请去『批量采集』页。",
+    active_stage="scrape",
+)
 
 with st.sidebar:
     st.header("Settings :")

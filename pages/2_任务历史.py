@@ -5,23 +5,17 @@ from database import (
     init_db, list_jobs, get_job, get_results_for_job,
     get_job_dataframe, export_to_excel, delete_job, update_job_status
 )
+from ui_theme import apply_theme, page_header
 
+apply_theme(page_title="任务历史 · AI-Scraper", page_icon="▣")
 init_db()
 
-st.set_page_config(page_title="任务历史", page_icon="📋")
-
-st.markdown("""
-<style>
-    [data-testid="stToolbar"] {display: none !important;}
-    .stDeployButton {display: none !important;}
-    #MainMenu {display: none !important;}
-    header {visibility: hidden !important;}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("### 任务历史")
-st.markdown("查看所有采集任务的执行记录和数据")
-st.markdown("---")
+page_header(
+    eyebrow="jobs / history",
+    title="任务历史",
+    subtitle="所有任务的执行记录、抓取明细和提取数据。可查看原始 markdown 与 LLM 输出。",
+    active_stage="store",
+)
 
 # ─── Filters ───
 col1, col2 = st.columns(2)
