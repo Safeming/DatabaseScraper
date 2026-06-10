@@ -1,0 +1,216 @@
+// AI-Scraper 数据库 ER 图
+// 用法:复制全部内容到 https://dbdiagram.io 在线编辑器,自动生成 ER 图,可导出 PNG/PDF/SVG
+// 然后把导出的 PNG 命名为 ER图.png 放到 doc/ 目录,页面 6_数据库结构会自动嵌入
+
+Project ai_scraper_db {
+  database_type: 'MySQL'
+  Note: 'AI-Scraper 项目 — 关系数据库设计 (15 表 + 4 视图 + 2 触发器)'
+}
+
+// ============ 元数据层 ============
+
+Table categories {
+  id int [pk, increment]
+  code varchar(50) [unique, not null]
+  name_zh varchar(50) [not null]
+  description varchar(500)
+  default_fields varchar(500)
+
+  Note: '网站类别字典(books/news/jobs/products/...)'
+}
+
+Table jobs {
+  id bigint [pk, increment]
+  name varchar(200) [not null]
+  status varchar(20) [default: 'pending']
+  category_id int [ref: > categories.id]
+  method varchar(20) [default: 'Crawl4AI']
+  llm_provider varchar(20) [default: 'Ollama']
+  llm_model varchar(80)
+  follow_pagination tinyint [default: 0]
+  max_pages int [default: 5]
+  schedule_cron varchar(50)
+  pipeline_config json
+  urls json
+  query varchar(500)
+  created_at timestamp
+  started_at timestamp
+  completed_at timestamp
+  error_message text
+
+  Indexes {
+    (status, created_at)
+  }
+
+  Note: '采集任务记录'
+}
+
+Table results {
+  id bigint [pk, increment]
+  job_id bigint [not null, ref: > jobs.id]
+  url varchar(2048) [not null]
+  page_number int [default: 1]
+  raw_markdown mediumtext
+  extracted_csv mediumtext
+  row_count int [default: 0]
+  status varchar(20) [default: 'pending']
+  error_message text
+  created_at timestamp
+
+  Note: '每页抓取结果(原始 markdown + LLM CSV)'
+}
+
+// ============ 维度层 ============
+
+Table authors {
+  id bigint [pk, increment]
+  name varchar(200) [unique, not null]
+  nationality varchar(50)
+  birth_year smallint
+  bio text
+
+  Note: '作者(books / quotes 共用)'
+}
+
+Table brands {
+  id int [pk, increment]
+  name varchar(100) [unique, not null]
+
+  Note: '品牌(products 用)'
+}
+
+Table news_sources {
+  id int [pk, increment]
+  name varchar(100) [unique, not null]
+  url varchar(500)
+
+  Note: '新闻来源(news 用)'
+}
+
+Table tags {
+  id int [pk, increment]
+  name varchar(50) [unique, not null]
+
+  Note: '标签(quotes 多对多)'
+}
+
+// ============ 业务表 ============
+
+Table books {
+  id bigint [pk, increment]
+  job_id bigint [ref: > jobs.id]
+  title varchar(500) [not null]
+  author_id bigint [ref: > authors.id]
+  price decimal(10,2) [note: 'CHECK price >= 0']
+  currency char(3) [default: 'GBP']
+  rating tinyint [note: 'CHECK rating BETWEEN 1 AND 5']
+  availability varchar(50)
+  isbn varchar(20)
+  source_url varchar(2048)
+  scraped_at timestamp
+
+  Indexes {
+    (title, author_id) [unique]
+    price
+    rating
+    scraped_at
+  }
+
+  Note: '图书业务表(books.toscrape.com 等)'
+}
+
+Table quotes {
+  id bigint [pk, increment]
+  job_id bigint [ref: > jobs.id]
+  quote text [not null]
+  author_id bigint [ref: > authors.id]
+  source_url varchar(2048)
+  scraped_at timestamp
+
+  Note: '名言业务表(quotes.toscrape.com 等)'
+}
+
+Table quote_tags {
+  quote_id bigint [pk, ref: > quotes.id]
+  tag_id int [pk, ref: > tags.id]
+
+  Note: '名言-标签 多对多'
+}
+
+Table products {
+  id bigint [pk, increment]
+  job_id bigint [ref: > jobs.id]
+  name varchar(500) [not null]
+  brand_id int [ref: > brands.id]
+  price decimal(10,2)
+  currency char(3) [default: 'USD']
+  sku varchar(100)
+  rating decimal(3,2) [note: 'CHECK rating BETWEEN 0 AND 5']
+  source_url varchar(2048)
+  scraped_at timestamp
+
+  Indexes {
+    (name, brand_id) [unique]
+    (brand_id, price)
+  }
+
+  Note: '商品业务表(scrapeme.live/shop 等)'
+}
+
+Table news {
+  id bigint [pk, increment]
+  job_id bigint [ref: > jobs.id]
+  title varchar(500) [not null]
+  author varchar(200)
+  source_id int [ref: > news_sources.id]
+  publish_date date
+  summary text
+  url varchar(2048)
+  url_hash char(64) [unique, note: 'SHA2(url, 256) 生成列,解决长 URL 索引超长问题']
+  scraped_at timestamp
+
+  Note: '新闻业务表'
+}
+
+Table jobs_listings {
+  id bigint [pk, increment]
+  job_id bigint [ref: > jobs.id]
+  job_title varchar(300) [not null]
+  company varchar(200)
+  location varchar(200)
+  salary varchar(100)
+  post_date date
+  source_url varchar(2048)
+  scraped_at timestamp
+
+  Note: '招聘信息业务表(避免和 jobs 任务表名冲突)'
+}
+
+Table generic_items {
+  id bigint [pk, increment]
+  job_id bigint [ref: > jobs.id]
+  category varchar(50) [not null]
+  data_json json [not null]
+  source_url varchar(2048)
+  scraped_at timestamp
+
+  Note: '通用回退表(其他冷门类别 movies/papers/forum 走这里)'
+}
+
+// ============ 审计层 ============
+
+Table price_history {
+  id bigint [pk, increment]
+  book_id bigint [ref: > books.id]
+  product_id bigint [ref: > products.id]
+  old_price decimal(10,2)
+  new_price decimal(10,2)
+  changed_at timestamp
+
+  Indexes {
+    (book_id, changed_at)
+    (product_id, changed_at)
+  }
+
+  Note: '价格变更历史表(由触发器 trg_book_price_change / trg_product_price_change 自动维护)'
+}
