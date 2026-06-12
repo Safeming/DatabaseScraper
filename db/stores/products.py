@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from db.models import Product, Brand
-from db.value_parsers import parse_price, parse_rating, coerce_str
+from db.value_parsers import parse_price, parse_rating, coerce_str, extract_image_url
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ def store_products(session, job_id: int, rows: list[dict]) -> int:
         rating = parse_rating(row.get("rating"))
         sku = coerce_str(row.get("sku"), max_len=100)
         source_url = coerce_str(row.get("url") or row.get("source_url"), max_len=2048)
+        image_url = extract_image_url(row)
 
         stmt = mysql_insert(Product).values(
             job_id=job_id,
@@ -48,12 +49,14 @@ def store_products(session, job_id: int, rows: list[dict]) -> int:
             sku=sku,
             rating=rating,
             source_url=source_url,
+            image_url=image_url,
         )
         stmt = stmt.on_duplicate_key_update(
             price=stmt.inserted.price,
             rating=stmt.inserted.rating,
             sku=stmt.inserted.sku,
             source_url=stmt.inserted.source_url,
+            image_url=stmt.inserted.image_url,
         )
         try:
             session.execute(stmt)

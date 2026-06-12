@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from db.models import News, NewsSource
-from db.value_parsers import parse_date, coerce_str
+from db.value_parsers import parse_date, coerce_str, extract_image_url
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,7 @@ def store_news(session, job_id: int, rows: list[dict]) -> int:
         source_id = _upsert_source(session, source_name, url)
         publish_date = parse_date(row.get("publish_date") or row.get("date"))
         summary = coerce_str(row.get("summary") or row.get("description"))
+        cover_image_url = extract_image_url(row)
 
         stmt = mysql_insert(News).values(
             job_id=job_id,
@@ -54,12 +55,14 @@ def store_news(session, job_id: int, rows: list[dict]) -> int:
             publish_date=publish_date,
             summary=summary,
             url=url,
+            cover_image_url=cover_image_url,
         )
         # url_hash 是 generated 列,自动从 url 算 SHA256;这里依赖它做去重
         stmt = stmt.on_duplicate_key_update(
             title=stmt.inserted.title,
             summary=stmt.inserted.summary,
             publish_date=stmt.inserted.publish_date,
+            cover_image_url=stmt.inserted.cover_image_url,
         )
         try:
             session.execute(stmt)

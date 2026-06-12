@@ -304,6 +304,13 @@ _CSS_WIDGETS = f"""
     border-radius: 6px;
     overflow: hidden;
 }}
+/* dataframe 内的图片缩略图 — 细边框 + 圆角 */
+[data-testid="stDataFrame"] img {{
+    border-radius: 4px;
+    border: 1px solid {COLOR_BORDER};
+    object-fit: cover;
+    background: {COLOR_BG};
+}}
 
 /* expander */
 [data-testid="stExpander"] {{

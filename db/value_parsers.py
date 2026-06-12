@@ -185,3 +185,32 @@ def coerce_str(raw, max_len: Optional[int] = None) -> Optional[str]:
     if max_len and len(text) > max_len:
         text = text[:max_len]
     return text
+
+
+# LLM 可能用的图片 URL 字段别名(按常见度排序)
+_IMAGE_URL_ALIASES = (
+    "cover_image_url", "image_url", "cover", "thumbnail",
+    "photo", "image", "img", "picture", "cover_url",
+)
+
+
+def extract_image_url(row: dict) -> Optional[str]:
+    """从 LLM 输出的 row dict 里挖图片 URL,容忍 LLM 用各种字段名 + [IMG: url] 标记格式。"""
+    for key in _IMAGE_URL_ALIASES:
+        v = row.get(key)
+        if not v:
+            continue
+        s = str(v).strip()
+        if not s or s.upper() in ("N/A", "NULL", "NONE"):
+            continue
+        # 可能是 LLM 保留了 [IMG: url] 标记格式,挖出真实 URL
+        import re
+        m = re.search(r"\[IMG:\s*(https?://[^\]\s]+)\s*\]", s)
+        if m:
+            s = m.group(1)
+        # 必须是 http(s) 开头才算有效
+        if s.startswith(("http://", "https://", "//")):
+            if s.startswith("//"):
+                s = "https:" + s
+            return s[:2048]
+    return None

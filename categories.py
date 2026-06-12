@@ -6,13 +6,13 @@
 CATEGORY_TEMPLATES = {
     "books": {
         "name_zh": "书籍 / 图书",
-        "fields": "title, author, price, rating, availability",
+        "fields": "title, author, price, rating, availability, cover_image_url",
         "description": "图书电商或图书目录网站",
         "examples": ["books.toscrape.com", "amazon.com/books", "豆瓣读书"],
     },
     "news": {
         "name_zh": "新闻 / 资讯",
-        "fields": "title, author, publish_date, summary, url",
+        "fields": "title, author, publish_date, summary, url, cover_image_url",
         "description": "新闻、博客、资讯类网站",
         "examples": ["news.ycombinator.com", "新浪新闻", "BBC"],
     },
@@ -24,7 +24,7 @@ CATEGORY_TEMPLATES = {
     },
     "products": {
         "name_zh": "电商 / 商品",
-        "fields": "name, price, brand, rating, sku",
+        "fields": "name, price, brand, rating, sku, image_url",
         "description": "电商商品列表、产品目录",
         "examples": ["scrapeme.live/shop", "淘宝", "京东"],
     },

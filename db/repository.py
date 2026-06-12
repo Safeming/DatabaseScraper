@@ -219,6 +219,7 @@ def _book_to_dict(b: Book) -> dict:
         "rating": b.rating,
         "availability": b.availability,
         "url": b.source_url,
+        "cover_image_url": b.cover_image_url,
     }
 
 
@@ -239,6 +240,7 @@ def _product_to_dict(p: Product) -> dict:
         "sku": p.sku,
         "rating": float(p.rating) if p.rating else None,
         "url": p.source_url,
+        "image_url": p.image_url,
     }
 
 
@@ -250,6 +252,7 @@ def _news_to_dict(n: News) -> dict:
         "publish_date": n.publish_date.isoformat() if n.publish_date else None,
         "summary": n.summary,
         "url": n.url,
+        "cover_image_url": n.cover_image_url,
     }
 
 

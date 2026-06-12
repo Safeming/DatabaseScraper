@@ -43,8 +43,8 @@ def clean_markdown(md_content, remove_links=False):
     md_content = re.sub(r"```[^`]*```", "", md_content, flags=re.DOTALL)
     md_content = re.sub(r"`[^`]*`", "", md_content)
 
-    # Remove images
-    md_content = re.sub(r"!\[(.*?)\]\(.*?\)", r"\1", md_content)
+    # 图片: 把 ![alt](url) 转成 [IMG: url] 标记,保留 URL 让 LLM 提取
+    md_content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"[IMG: \2]", md_content)
 
     # Remove headers
     # md_content = re.sub(r"^#+\s*", "", md_content, flags=re.MULTILINE)

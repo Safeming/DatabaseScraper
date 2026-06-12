@@ -68,6 +68,14 @@ def get_prompt(query, scraped_data) :
 11. Do NOT summarize, paraphrase, or reword — copy values verbatim from the source.
 12. Process items in the order they appear in the source.
 
+### Image fields (cover_image_url / image_url / cover / thumbnail):
+- The source markdown contains image markers like `[IMG: https://...jpg]` placed near each item.
+- For each item, find the NEAREST `[IMG: url]` marker (typically appearing right before or right after the item's title/name).
+- Extract ONLY the URL inside the marker, output it as the field value (without the `[IMG: ]` wrapper).
+- Example: source has `[IMG: https://site.com/img.jpg] Product A` → image field value is `https://site.com/img.jpg`
+- If no `[IMG:]` marker is near the item, write "N/A" — do NOT invent a URL.
+- Image URLs typically end in .jpg / .jpeg / .png / .webp / .gif and contain "/uploads/", "/media/", "/images/", "/cache/" etc.
+
 ### Anti-patterns (do NOT do these):
 - ❌ Stuffing all info into the first column when other columns "don't fit"
 - ❌ Outputting only the first 5-10 items and stopping
@@ -75,12 +83,30 @@ def get_prompt(query, scraped_data) :
 - ❌ Adding any text before or after the CSV (no "Here is the CSV:", no "```csv")
 - ❌ REPEATING items: each row must be UNIQUE. If you finish all items, STOP — do NOT loop back and output them again.
 - ❌ Outputting an item twice with slight wording differences. Each unique source item appears EXACTLY ONCE.
+- ❌ If the source is unclear, malformed, or empty: output JUST the header line, NEVER fabricate or repeat data.
+- ❌ Putting the [IMG: prefix or ] suffix into the image URL value. Output JUST the bare URL.
 
-### Example (for fields: quote, author):
+### Stop condition:
+After you output the last unique item from the source, immediately stop generating. Do not output anything more.
+If you cannot find any matching item, output ONLY the header line and stop.
+
+### Example 1 (for fields: quote, author):
 quote,author
 "The world is a book, and those who do not travel read only one page.",Saint Augustine
 Life is short. Smile while you still have teeth.,Unknown
 Some quote without known source,N/A
+
+### Example 2 (for fields: name, price, image_url):
+Source contains:
+  [IMG: https://shop.example/cdn/laptop-a.jpg] MacBook Pro 14
+  Price: $1999
+  [IMG: https://shop.example/cdn/laptop-b.jpg] Dell XPS 15
+  Price: $1499
+
+Correct output:
+name,price,image_url
+MacBook Pro 14,$1999,https://shop.example/cdn/laptop-a.jpg
+Dell XPS 15,$1499,https://shop.example/cdn/laptop-b.jpg
 
 ### CSV Output:
 """
@@ -480,6 +506,17 @@ def validate_csv_output(raw_text, query, min_rows=1):
     aligned = sum(1 for r in data_rows if len(r) == header_cols)
     if aligned < len(data_rows) * 0.5:
         return False, f"only {aligned}/{len(data_rows)} rows aligned with header", []
+
+    # 检测 LLM 循环输出: 同一行被反复复制
+    aligned_rows = [tuple(r) for r in data_rows if len(r) == header_cols]
+    if len(aligned_rows) >= 5:
+        unique_count = len(set(aligned_rows))
+        # 至少 5 行,但唯一值不超过 2 → 明显是循环
+        if unique_count <= max(2, len(aligned_rows) // 10):
+            return False, (
+                f"LLM repetition loop: {len(aligned_rows)} rows but only "
+                f"{unique_count} unique"
+            ), []
 
     parsed = []
     for r in data_rows:

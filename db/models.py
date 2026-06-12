@@ -135,6 +135,7 @@ class Book(Base):
     availability: Mapped[Optional[str]] = mapped_column(String(50))
     isbn: Mapped[Optional[str]] = mapped_column(String(20))
     source_url: Mapped[Optional[str]] = mapped_column(String(2048))
+    cover_image_url: Mapped[Optional[str]] = mapped_column(String(2048))
     scraped_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     author: Mapped[Optional["Author"]] = relationship(lazy="joined")
@@ -185,6 +186,7 @@ class Product(Base):
     sku: Mapped[Optional[str]] = mapped_column(String(100))
     rating: Mapped[Optional[float]] = mapped_column(Numeric(3, 2))
     source_url: Mapped[Optional[str]] = mapped_column(String(2048))
+    image_url: Mapped[Optional[str]] = mapped_column(String(2048))
     scraped_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     brand: Mapped[Optional["Brand"]] = relationship(lazy="joined")
@@ -205,6 +207,7 @@ class News(Base):
     publish_date: Mapped[Optional[date]] = mapped_column(Date)
     summary: Mapped[Optional[str]] = mapped_column(Text)
     url: Mapped[Optional[str]] = mapped_column(String(2048))
+    cover_image_url: Mapped[Optional[str]] = mapped_column(String(2048))
     scraped_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     source: Mapped[Optional["NewsSource"]] = relationship(lazy="joined")

@@ -25,6 +25,21 @@ def run_query(sql: str, params: dict | None = None) -> pd.DataFrame:
         return pd.read_sql(text(sql), conn, params=params or {})
 
 
+def render_table(df: pd.DataFrame, image_cols: list[str] | None = None,
+                 link_cols: list[str] | None = None, height: int = 420):
+    """渲染数据表 — 自动把图片列展示为缩略图,链接列展示为可点击链接。"""
+    config = {}
+    for col in image_cols or []:
+        if col in df.columns:
+            config[col] = st.column_config.ImageColumn(
+                label=col, width="small", help="点击打开原图"
+            )
+    for col in link_cols or []:
+        if col in df.columns:
+            config[col] = st.column_config.LinkColumn(label=col, width="small")
+    st.dataframe(df, width="stretch", height=height, column_config=config)
+
+
 def show_sql(sql: str, params: dict | None = None):
     """在 expander 里展示真实跑的 SQL"""
     with st.expander("🔍 查看本页 SQL"):
@@ -46,7 +61,8 @@ with tabs[0]:
     limit = c3.number_input("条数", 10, 1000, 100, key="bk_lim")
 
     sql = """
-        SELECT b.id, b.title,
+        SELECT b.cover_image_url AS 封面,
+               b.id, b.title,
                a.name AS author,
                a.nationality,
                b.price, b.currency, b.rating, b.availability,
@@ -66,7 +82,7 @@ with tabs[0]:
     if kw:
         params["kw"] = f"%{kw}%"
     df = run_query(sql, params)
-    st.dataframe(df, width="stretch", height=420)
+    render_table(df, image_cols=["封面"])
     st.caption(f"共 {len(df)} 行")
     show_sql(sql, params)
 
@@ -110,7 +126,8 @@ with tabs[2]:
     limit = c2.number_input("条数", 10, 1000, 100, key="pd_lim")
 
     sql = """
-        SELECT p.id, p.name,
+        SELECT p.image_url AS 商品图,
+               p.id, p.name,
                br.name AS brand,
                p.price, p.currency, p.rating, p.sku,
                p.scraped_at
@@ -128,7 +145,7 @@ with tabs[2]:
     if kw:
         params["kw"] = f"%{kw}%"
     df = run_query(sql, params)
-    st.dataframe(df, width="stretch", height=420)
+    render_table(df, image_cols=["商品图"])
     st.caption(f"共 {len(df)} 行")
     show_sql(sql, params)
 
@@ -139,7 +156,8 @@ with tabs[3]:
     limit = c2.number_input("条数", 10, 1000, 100, key="nw_lim")
 
     sql = """
-        SELECT n.id, n.title,
+        SELECT n.cover_image_url AS 头图,
+               n.id, n.title,
                n.author,
                s.name AS source,
                n.publish_date,
@@ -159,7 +177,7 @@ with tabs[3]:
     if kw:
         params["kw"] = f"%{kw}%"
     df = run_query(sql, params)
-    st.dataframe(df, width="stretch", height=420)
+    render_table(df, image_cols=["头图"])
     st.caption(f"共 {len(df)} 行")
     show_sql(sql, params)
 
